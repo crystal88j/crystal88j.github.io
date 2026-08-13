@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#102a43">
+  <title>小红书选品助手</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>小红书选品助手</h1>
+    <span id="header-status">本地版</span>
+  </header>
+
+  <main id="app">
+    <section id="dashboard" class="page active">
+      <div class="stats">
+        <div class="stat"><strong id="stat-shops">0</strong><span>店铺</span></div>
+        <div class="stat"><strong id="stat-snapshots">0</strong><span>截图</span></div>
+        <div class="stat"><strong id="stat-tasks">0</strong><span>今日任务</span></div>
+      </div>
+      <div class="card">
+        <h2>今日流程</h2>
+        <ol>
+          <li>从手机小红书复制店铺分享文案。</li>
+          <li>回到本应用，粘贴到店铺池。</li>
+          <li>打开小红书截店铺长图。</li>
+          <li>回到本应用，上传截图。</li>
+          <li>第二天看今日任务，知道哪几家要重新截图。</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h2>使用提示</h2>
+        <p>首次 OCR 需要下载中文识别模型，请保持网络连接。之后识别模型会缓存，速度会更快。</p>
+      </div>
+    </section>
+
+    <section id="tasks" class="page">
+      <div class="section-head">
+        <h2>今日任务</h2>
+        <button class="ghost" id="refresh-tasks">刷新</button>
+      </div>
+      <div id="task-list" class="list"></div>
+    </section>
+
+    <section id="shops" class="page">
+      <div class="card">
+        <h2>添加店铺</h2>
+        <textarea id="shop-input" rows="3" placeholder="粘贴小红书分享文案或店铺链接"></textarea>
+        <input id="shop-title" placeholder="店铺名称，可选">
+        <input id="shop-keyword" placeholder="主营关键词，例如：中考">
+        <button id="add-shop">添加店铺</button>
+        <p id="shop-message" class="message"></p>
+      </div>
+      <div class="card">
+        <div class="section-head">
+          <h2>店铺池</h2>
+          <button class="ghost" id="refresh-shops">刷新</button>
+        </div>
+        <div id="shop-list" class="list"></div>
+      </div>
+    </section>
+
+    <section id="records" class="page">
+      <div class="section-head">
+        <h2>截图与识别记录</h2>
+        <button class="ghost" id="refresh-records">刷新</button>
+      </div>
+      <div id="record-list" class="list"></div>
+    </section>
+
+    <section id="report" class="page">
+      <div class="card">
+        <h2>报表</h2>
+        <p>当前版本先把店铺、截图、OCR 文本导出。商品日销量结构化匹配需要真实截图调优后接入。</p>
+        <button id="export-csv">导出 CSV</button>
+      </div>
+      <div class="card">
+        <h2>本地数据</h2>
+        <p>数据只保存在这台 iPhone 的浏览器本地，不会上传到任何服务器。</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button data-page="dashboard" class="active">总览</button>
+    <button data-page="tasks">任务</button>
+    <button data-page="shops">店铺</button>
+    <button data-page="records">记录</button>
+    <button data-page="report">报表</button>
+  </nav>
+
+  <input id="screenshot-file" type="file" accept="image/*" style="display:none">
+  <div id="toast" class="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    if (!window.Tesseract) {
+      document.write('<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"><\/script>');
+    }
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

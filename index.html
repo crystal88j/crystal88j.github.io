@@ -51,7 +51,7 @@
       <div class="card">
         <h2>添加店铺</h2>
         <textarea id="shop-input" rows="3" placeholder="粘贴小红书分享文案或店铺链接"></textarea>
-        <input id="shop-title" placeholder="店铺名称，可选">
+        <input id="shop-title" placeholder="店铺名称会自动识别，可修改">
         <input id="shop-keyword" placeholder="主营关键词，例如：中考">
         <button id="add-shop">添加店铺</button>
         <p id="shop-message" class="message"></p>
@@ -87,8 +87,8 @@
 
     <section id="library" class="page">
       <div class="card">
-        <h2>优质产品库</h2>
-        <p>日销量达到阈值后自动进入产品库。上架后会自动排到后面。</p>
+        <h2>产品排行 / 产品库</h2>
+        <p>按日销量自动排序，卖得好的排前面；已上架默认隐藏。</p>
         <label>自动入库日销阈值
           <input id="quality-threshold" type="number" min="1" value="5">
         </label>

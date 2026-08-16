@@ -112,6 +112,11 @@ function extractUrl(text) {
   return matches[0].replace(/[.,;!?]+$/, "");
 }
 
+function extractShopName(text) {
+  const match = String(text).match(/(?:推荐|分享)小红书好店\s*([^\s，,。；;\[\]()]+)/);
+  return match ? match[1] : "";
+}
+
 async function addShop() {
   const inputText = $("#shop-input").value.trim();
   const url = extractUrl(inputText);
@@ -126,11 +131,16 @@ async function addShop() {
     message.textContent = "该店铺已录入，无需重复录入";
     return;
   }
+  const autoTitle = extractShopName(inputText);
+  if (autoTitle && !$("#shop-title").value.trim()) {
+    $("#shop-title").value = autoTitle;
+  }
   const shop = {
     url,
-    title: $("#shop-title").value.trim(),
+    title: $("#shop-title").value.trim() || autoTitle,
     keyword: $("#shop-keyword").value.trim(),
     note: "",
+    category: "",
     status: "candidate",
     source: "manual",
     score: 0,
@@ -374,9 +384,16 @@ async function computeDailyForShop(shopId) {
   const secondProducts = secondSnap.parsedProducts || [];
   if (!firstProducts.length || !secondProducts.length) return 0;
   const pairs = matchProducts(firstProducts, secondProducts);
+  const intervalMs = Date.parse(secondSnap.snapshot_at) - Date.parse(firstSnap.snapshot_at);
+  const intervalDays = intervalMs / 86400000;
+  const dailyFactor = intervalDays >= 1.2 ? intervalDays : 1;
   const threshold = Number($("#quality-threshold")?.value || 5);
   let count = 0;
   for (const row of pairs) {
+    const rawDelta = row.daily_sales;
+    row.daily_sales = dailyFactor > 1 ? Math.round((rawDelta / dailyFactor) * 10) / 10 : rawDelta;
+    row.daily_gmv = Math.round(row.daily_sales * (row.price_t1 ?? row.price_t0 ?? 0) * 100) / 100;
+    row.interval_days = dailyFactor > 1 ? Math.round(intervalDays * 10) / 10 : 1;
     const products = await getAll("products");
     let product = products.find(
       (p) => p.shop_id === shopId && textSimilarity(p.title, row.title) > 0.6
@@ -387,10 +404,12 @@ async function computeDailyForShop(shopId) {
         title: row.title,
         status: "candidate",
         note: "",
+        product_url: "",
         price_t1: row.price_t1,
         sales_t1: row.sales_t1,
         daily_sales: row.daily_sales,
         daily_gmv: row.daily_gmv,
+        interval_days: row.interval_days,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -400,6 +419,7 @@ async function computeDailyForShop(shopId) {
       product.sales_t1 = row.sales_t1;
       product.daily_sales = row.daily_sales;
       product.daily_gmv = row.daily_gmv;
+      product.interval_days = row.interval_days;
       product.updated_at = new Date().toISOString();
       await putItem("products", product);
     }
@@ -495,6 +515,7 @@ function shopCard(shop) {
         <div>
           <div class="item-title">${escapeHtml(shop.title || "未命名店铺")}</div>
           <div class="item-meta">${escapeHtml(shop.keyword || "无关键词")} · ${escapeHtml(shop.status)} · 已看 ${shop.seen_count || 0} 次</div>
+          <div class="item-meta">分类：${escapeHtml(shop.category || "未分类")} · 备注：${escapeHtml(shop.note || "无")}</div>
           <div class="item-meta">${escapeHtml(shop.url)}</div>
         </div>
       </div>
@@ -502,7 +523,7 @@ function shopCard(shop) {
         <a href="${escapeHtml(shop.url)}" target="_blank" rel="noopener">打开店铺</a>
         <button data-upload-shop="${shop.id}">上传截图</button>
         <button class="ghost" data-view-shop="${shop.id}">查看识别</button>
-        <button class="ghost" data-edit-shop="${shop.id}">编辑</button>
+        <button class="ghost" data-note-shop="${shop.id}">备注/分类</button>
         <button class="danger" data-exclude-shop="${shop.id}">排除</button>
       </div>
     </div>`;
@@ -581,7 +602,32 @@ async function renderRecords() {
     return;
   }
   const shops = await getAll("shops");
-  list.innerHTML = snaps.map((snap) => snapshotCard(snap, shops.find((s) => s.id === snap.shop_id))).join("");
+  const byShop = new Map();
+  for (const snap of snaps) {
+    if (!byShop.has(snap.shop_id)) byShop.set(snap.shop_id, []);
+    byShop.get(snap.shop_id).push(snap);
+  }
+  const shopsWithRecords = [...byShop.keys()]
+    .map((shopId) => shops.find((shop) => shop.id === shopId))
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aLatest = byShop.get(a.id)[0].snapshot_at;
+      const bLatest = byShop.get(b.id)[0].snapshot_at;
+      return new Date(bLatest) - new Date(aLatest);
+    });
+  list.innerHTML = shopsWithRecords
+    .map((shop) => {
+      const items = byShop.get(shop.id);
+      return `
+        <details class="item shop-record">
+          <summary>
+            <div class="item-title">${escapeHtml(shop.title || "未命名店铺")}</div>
+            <div class="item-meta">${escapeHtml(shop.url)} · ${items.length} 条记录</div>
+          </summary>
+          ${items.map((snap) => snapshotCard(snap, shop)).join("")}
+        </details>`;
+    })
+    .join("");
 }
 
 async function renderLibrary() {
@@ -591,8 +637,11 @@ async function renderLibrary() {
   const visible = products.filter(
     (product) => !hideListed || product.status !== "listed"
   );
-  const order = { discarded: 0, candidate: 1, quality: 2, listed: 3 };
-  visible.sort((a, b) => (order[a.status] || 0) - (order[b.status] || 0) || b.daily_sales - a.daily_sales);
+  visible.sort((a, b) => {
+    if (a.status === "listed" && b.status !== "listed") return 1;
+    if (b.status === "listed" && a.status !== "listed") return -1;
+    return (b.daily_sales || 0) - (a.daily_sales || 0);
+  });
   const list = $("#library-list");
   if (!visible.length) {
     list.innerHTML = '<div class="card">暂无产品。上传两次同店截图后会自动生成。</div>';
@@ -612,10 +661,12 @@ async function renderLibrary() {
           <div class="badge ${product.status === "quality" ? "warn" : ""}">${escapeHtml(statusLabel)}</div>
           <div class="item-title">${escapeHtml(product.title)}</div>
           <div class="item-meta">${escapeHtml(shop.title || "店铺")}</div>
-          <div class="item-meta">日销 ${escapeHtml(product.daily_sales ?? "-")} · 单价 ${escapeHtml(product.price_t1 ?? "-")} · 累计 ${escapeHtml(product.sales_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
+          <div class="item-meta">日均销 ${escapeHtml(product.daily_sales ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 单价 ${escapeHtml(product.price_t1 ?? "-")} · 累计 ${escapeHtml(product.sales_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
+          <div class="item-meta">${product.product_url ? `<a href="${escapeHtml(product.product_url)}" target="_blank" rel="noopener">商品链接</a>` : "暂无商品链接"}</div>
           <div class="item-meta">备注：${escapeHtml(product.note || "无")}</div>
           <div class="item-actions">
             <button data-list-product="${product.id}">标记已上架</button>
+            <button class="ghost" data-product-url="${product.id}">填写商品链接</button>
             <button class="ghost" data-note-product="${product.id}">备注</button>
             <button class="danger" data-delete-product="${product.id}">删除</button>
           </div>
@@ -667,7 +718,7 @@ function exportCsv() {
       ]);
     }
     rows.push([]);
-    rows.push(["产品库更新时间", "店铺", "商品", "日销量", "单价", "累计销量", "日GMV", "状态", "备注"]);
+    rows.push(["产品库更新时间", "店铺", "商品", "日均销量", "间隔天数", "单价", "累计销量", "日GMV", "状态", "备注"]);
     for (const product of products) {
       const shop = shops.find((s) => s.id === product.shop_id) || {};
       rows.push([
@@ -675,6 +726,7 @@ function exportCsv() {
         shop.title || "",
         product.title || "",
         product.daily_sales ?? "",
+        product.interval_days || "",
         product.price_t1 ?? "",
         product.sales_t1 ?? "",
         product.daily_gmv ?? "",
@@ -707,6 +759,17 @@ function bindEvents() {
   });
 
   $("#add-shop").addEventListener("click", addShop);
+  $("#shop-input").addEventListener("input", (event) => {
+    const titleInput = $("#shop-title");
+    const name = extractShopName(event.target.value);
+    if (name && (!titleInput.value.trim() || titleInput.dataset.auto === "true")) {
+      titleInput.value = name;
+      titleInput.dataset.auto = "true";
+    } else if (!event.target.value.trim()) {
+      titleInput.value = "";
+      delete titleInput.dataset.auto;
+    }
+  });
   $("#refresh-tasks").addEventListener("click", renderTasks);
   $("#refresh-shops").addEventListener("click", renderShops);
   $("#refresh-records").addEventListener("click", renderRecords);
@@ -769,6 +832,21 @@ function bindEvents() {
       return;
     }
 
+    const productUrlBtn = event.target.closest("[data-product-url]");
+    if (productUrlBtn) {
+      const productId = Number(productUrlBtn.dataset.productUrl);
+      getAll("products").then((products) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product) return;
+        const url = prompt("粘贴商品链接", product.product_url || "");
+        if (url === null) return;
+        product.product_url = url.trim();
+        product.updated_at = new Date().toISOString();
+        putItem("products", product).then(renderLibrary);
+      });
+      return;
+    }
+
     const noteProductBtn = event.target.closest("[data-note-product]");
     if (noteProductBtn) {
       const productId = Number(noteProductBtn.dataset.noteProduct);
@@ -797,18 +875,18 @@ function bindEvents() {
       return;
     }
 
-    const editBtn = event.target.closest("[data-edit-shop]");
-    if (editBtn) {
-      const shopId = Number(editBtn.dataset.editShop);
-      const url = prompt("新的店铺链接或分享文案");
-      if (url === null) return;
-      const title = prompt("店铺名称（可留空）", "");
-      const keyword = prompt("主营关键词（可留空）", "");
+    const noteBtn = event.target.closest("[data-note-shop]");
+    if (noteBtn) {
+      const shopId = Number(noteBtn.dataset.noteShop);
       getShop(shopId).then((shop) => {
         if (!shop) return;
-        shop.url = extractUrl(url) || shop.url;
-        shop.title = title || shop.title;
-        shop.keyword = keyword || shop.keyword;
+        const note = prompt("填写备注（可留空）", shop.note || "");
+        if (note === null) return;
+        shop.note = note;
+        const category = prompt("填写分类标签（可留空）", shop.category || "");
+        if (category !== null) {
+          shop.category = category;
+        }
         shop.updated_at = new Date().toISOString();
         putItem("shops", shop).then(renderAll);
       });

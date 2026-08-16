@@ -102,6 +102,27 @@ async function deleteItem(storeName, key) {
   await requestAsPromise(tx.objectStore(storeName).delete(key));
 }
 
+async function deleteShop(shopId) {
+  const products = (await getAll("products")).filter((p) => p.shop_id === shopId);
+  const productIds = new Set(products.map((p) => p.id));
+  for (const product of products) {
+    await deleteItem("products", product.id);
+  }
+  const productSnapshots = await getAll("product_snapshots");
+  for (const snap of productSnapshots) {
+    if (productIds.has(snap.product_id)) {
+      await deleteItem("product_snapshots", snap.id);
+    }
+  }
+  const shopSnapshots = (await getAll("shop_snapshots")).filter(
+    (snap) => snap.shop_id === shopId
+  );
+  for (const snap of shopSnapshots) {
+    await deleteItem("shop_snapshots", snap.id);
+  }
+  await deleteItem("shops", shopId);
+}
+
 function extractUrl(text) {
   const matches = String(text).match(/https?:\/\/[^\s)\]"'<>]+/g) || [];
   if (!matches.length) return String(text).trim();
@@ -115,6 +136,26 @@ function extractUrl(text) {
 function extractShopName(text) {
   const match = String(text).match(/(?:推荐|分享)小红书好店\s*([^\s，,。；;\[\]()]+)/);
   return match ? match[1] : "";
+}
+
+function extractShopNameFromOcr(items) {
+  const candidates = items
+    .filter((item) => {
+      const [x, y] = itemCenter(item);
+      const text = item.text;
+      return (
+        y >= 200 &&
+        y <= 500 &&
+        x >= 100 &&
+        x <= 360 &&
+        text.length >= 2 &&
+        text.length <= 12 &&
+        !/\d/.test(text) &&
+        !isNoise(text)
+      );
+    })
+    .sort((a, b) => itemCenter(a)[1] - itemCenter(b)[1]);
+  return candidates.length ? candidates[0].text : "";
 }
 
 async function addShop() {
@@ -153,7 +194,9 @@ async function addShop() {
   $("#shop-input").value = "";
   $("#shop-title").value = "";
   $("#shop-keyword").value = "";
-  message.textContent = "店铺已添加";
+  message.textContent = autoTitle
+    ? "店铺已添加"
+    : "店铺已添加，上传截图后会从截图补全店铺名";
   toast("店铺已添加");
   renderAll();
 }
@@ -468,6 +511,12 @@ async function uploadScreenshot(shopId, file) {
     await addItem("shop_snapshots", snap);
     const shop = await getShop(shopId);
     if (shop) {
+      if (!shop.title || shop.title === "未命名店铺" || shop.title.startsWith("未命名")) {
+        const detectedName = extractShopNameFromOcr(items);
+        if (detectedName) {
+          shop.title = detectedName;
+        }
+      }
       shop.last_seen_at = snap.snapshot_at;
       shop.seen_count = (shop.seen_count || 0) + 1;
       shop.updated_at = snap.snapshot_at;
@@ -524,7 +573,10 @@ function shopCard(shop) {
         <button data-upload-shop="${shop.id}">上传截图</button>
         <button class="ghost" data-view-shop="${shop.id}">查看识别</button>
         <button class="ghost" data-note-shop="${shop.id}">备注/分类</button>
-        <button class="danger" data-exclude-shop="${shop.id}">排除</button>
+        ${shop.status === "excluded"
+          ? `<button class="ghost" data-restore-shop="${shop.id}">恢复</button>`
+          : `<button class="danger" data-exclude-shop="${shop.id}">排除</button>`}
+        <button class="danger" data-delete-shop="${shop.id}">删除店铺</button>
       </div>
     </div>`;
 }
@@ -890,6 +942,25 @@ function bindEvents() {
         shop.updated_at = new Date().toISOString();
         putItem("shops", shop).then(renderAll);
       });
+      return;
+    }
+
+    const restoreBtn = event.target.closest("[data-restore-shop]");
+    if (restoreBtn) {
+      const shopId = Number(restoreBtn.dataset.restoreShop);
+      getShop(shopId).then((shop) => {
+        if (!shop) return;
+        shop.status = "candidate";
+        shop.updated_at = new Date().toISOString();
+        putItem("shops", shop).then(renderAll);
+      });
+      return;
+    }
+
+    const deleteShopBtn = event.target.closest("[data-delete-shop]");
+    if (deleteShopBtn) {
+      if (!confirm("确认删除这家店铺及其全部截图、识别记录和产品吗？")) return;
+      deleteShop(Number(deleteShopBtn.dataset.deleteShop)).then(renderAll);
       return;
     }
 

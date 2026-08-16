@@ -1,4 +1,4 @@
-const CACHE_NAME = "xhs-selection-pwa-v6";
+const CACHE_NAME = "xhs-selection-pwa-v8";
 const APP_SHELL = [
   "./",
   "./index.html",

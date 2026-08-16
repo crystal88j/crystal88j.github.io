@@ -123,6 +123,12 @@ async function deleteShop(shopId) {
   await deleteItem("shops", shopId);
 }
 
+async function clearStore(storeName) {
+  const db = await openDB();
+  const tx = db.transaction(storeName, "readwrite");
+  await requestAsPromise(tx.objectStore(storeName).clear());
+}
+
 function extractUrl(text) {
   const matches = String(text).match(/https?:\/\/[^\s)\]"'<>]+/g) || [];
   if (!matches.length) return String(text).trim();
@@ -757,6 +763,77 @@ function toast(message) {
   toast.timer = setTimeout(() => el.classList.remove("show"), 2400);
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportBackup() {
+  const storeNames = ["shops", "shop_snapshots", "products", "product_snapshots", "daily_stats"];
+  const data = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    stores: {},
+  };
+  for (const name of storeNames) {
+    data.stores[name] = await getAll(name);
+  }
+  for (const snap of data.stores.shop_snapshots || []) {
+    if (snap.imageData && snap.imageData.byteLength) {
+      snap.imageData = arrayBufferToBase64(snap.imageData);
+    }
+  }
+  const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+  downloadBlob(blob, `选品助手备份_${new Date().toISOString().slice(0, 10)}.json`);
+  toast("备份已导出");
+}
+
+async function importBackup(file) {
+  const text = await file.text();
+  const data = JSON.parse(text);
+  if (!data || !data.stores) {
+    throw new Error("这不是有效的备份文件");
+  }
+  if (!confirm("导入会覆盖当前全部数据，确认继续吗？")) return;
+  const storeNames = ["shops", "shop_snapshots", "products", "product_snapshots", "daily_stats"];
+  for (const name of storeNames) {
+    await clearStore(name);
+  }
+  for (const name of storeNames) {
+    for (const item of data.stores[name] || []) {
+      if (name === "shop_snapshots" && item.imageData && typeof item.imageData === "string") {
+        item.imageData = base64ToArrayBuffer(item.imageData);
+      }
+      await addItem(name, item);
+    }
+  }
+  toast("备份已恢复");
+  renderAll();
+}
+
 function exportCsv() {
   const build = async () => {
     const shops = await getAll("shops");
@@ -833,6 +910,22 @@ function bindEvents() {
   $("#refresh-shops").addEventListener("click", renderShops);
   $("#refresh-records").addEventListener("click", renderRecords);
   $("#export-csv").addEventListener("click", exportCsv);
+  $("#export-backup").addEventListener("click", () => {
+    exportBackup().catch((error) => toast(`备份失败：${error.message}`));
+  });
+  $("#import-backup").addEventListener("click", () => {
+    $("#backup-file").click();
+  });
+  $("#backup-file").addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    try {
+      await importBackup(file);
+    } catch (error) {
+      toast(`恢复失败：${error.message}`);
+    }
+    event.target.value = "";
+  });
   $("#quality-threshold").addEventListener("change", renderLibrary);
   $("#hide-listed").addEventListener("change", renderLibrary);
 

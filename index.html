@@ -76,13 +76,28 @@
     <section id="report" class="page">
       <div class="card">
         <h2>报表</h2>
-        <p>当前版本先把店铺、截图、OCR 文本导出。商品日销量结构化匹配需要真实截图调优后接入。</p>
+        <p>导出店铺、截图、OCR 文本和产品库记录。</p>
         <button id="export-csv">导出 CSV</button>
       </div>
       <div class="card">
         <h2>本地数据</h2>
         <p>数据只保存在这台 iPhone 的浏览器本地，不会上传到任何服务器。</p>
       </div>
+    </section>
+
+    <section id="library" class="page">
+      <div class="card">
+        <h2>优质产品库</h2>
+        <p>日销量达到阈值后自动进入产品库。上架后会自动排到后面。</p>
+        <label>自动入库日销阈值
+          <input id="quality-threshold" type="number" min="1" value="5">
+        </label>
+        <label class="switch-line">
+          <input id="hide-listed" type="checkbox" checked>
+          隐藏已上架
+        </label>
+      </div>
+      <div id="library-list" class="list"></div>
     </section>
   </main>
 
@@ -92,6 +107,7 @@
     <button data-page="shops">店铺</button>
     <button data-page="records">记录</button>
     <button data-page="report">报表</button>
+    <button data-page="library">产品库</button>
   </nav>
 
   <input id="screenshot-file" type="file" accept="image/*" style="display:none">

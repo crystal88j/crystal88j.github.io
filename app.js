@@ -494,6 +494,7 @@ async function uploadScreenshot(shopId, file) {
   $("#header-status").textContent = "OCR 准备中";
   try {
     const { text, items } = await recognizeImage(file);
+    const imageData = await file.arrayBuffer();
     const lines = text
       .split("\n")
       .map((line) => line.trim())
@@ -503,7 +504,8 @@ async function uploadScreenshot(shopId, file) {
       shop_id: shopId,
       snapshot_at: new Date().toISOString(),
       stage,
-      imageBlob: file,
+      imageData,
+      imageMime: file.type || "image/*",
       ocr_lines: lines,
       parsedProducts,
       created_at: new Date().toISOString(),
@@ -541,7 +543,8 @@ async function replaceSnapshot(snapshotId, file) {
   toast("正在替换截图，请稍候");
   try {
     const { text, items } = await recognizeImage(file);
-    snap.imageBlob = file;
+    snap.imageData = await file.arrayBuffer();
+    snap.imageMime = file.type || "image/*";
     snap.ocr_lines = text
       .split("\n")
       .map((line) => line.trim())
@@ -602,7 +605,11 @@ function taskCard(task) {
 }
 
 function snapshotCard(snap, shop) {
-  const imageUrl = snap.imageBlob ? URL.createObjectURL(snap.imageBlob) : "";
+  const imageUrl = snap.imageData
+    ? URL.createObjectURL(new Blob([snap.imageData], { type: snap.imageMime || "image/*" }))
+    : snap.imageBlob
+      ? URL.createObjectURL(snap.imageBlob)
+      : "";
   return `
     <div class="item">
       <div class="item-head">

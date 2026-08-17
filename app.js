@@ -496,6 +496,25 @@ async function computeDailyForShop(shopId) {
   return count;
 }
 
+async function reprocessSnapshot(snap) {
+  if ((snap.parsedProducts || []).length > 0) return false;
+  let file = null;
+  if (snap.imageData) {
+    file = new Blob([snap.imageData], { type: snap.imageMime || "image/*" });
+  } else if (snap.imageBlob) {
+    file = snap.imageBlob;
+  }
+  if (!file) return false;
+  const { text, items } = await recognizeImage(file);
+  snap.ocr_lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  snap.parsedProducts = parseProductsFromItems(items);
+  await putItem("shop_snapshots", snap);
+  return true;
+}
+
 async function uploadScreenshot(shopId, file) {
   const last = await getLatestSnapshot(shopId);
   const now = Date.now();
@@ -941,11 +960,16 @@ function bindEvents() {
   $("#hide-listed").addEventListener("change", renderLibrary);
   $("#recompute-all").addEventListener("click", async () => {
     const shops = await getAll("shops");
+    let reprocessed = 0;
     let count = 0;
     for (const shop of shops) {
+      const snaps = await getShopSnapshots(shop.id);
+      for (const snap of snaps) {
+        if (await reprocessSnapshot(snap)) reprocessed += 1;
+      }
       count += await computeDailyForShop(shop.id);
     }
-    toast(`重新计算完成，更新 ${count} 个商品`);
+    toast(`重新识别 ${reprocessed} 张截图，更新 ${count} 个商品`);
     renderLibrary();
   });
 

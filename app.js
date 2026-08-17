@@ -326,12 +326,23 @@ function parseProductsFromItems(items) {
   const tabY = items
     .filter((item) => tabWords.has(item.text))
     .map((item) => itemCenter(item)[1]);
-  const startY = Math.max(590, (tabY.length ? Math.max(...tabY) : 590) + 25);
+  const xs = items.map((item) => itemCenter(item)[0]);
+  const maxX = Math.max(1, ...xs);
+  const columnThreshold = maxX * 0.5;
+  const salesY = items
+    .filter((item) => salesFromLine(item.text) !== null)
+    .map((item) => itemCenter(item)[1]);
+  let startY = tabY.length
+    ? Math.max(...tabY) + 25
+    : salesY.length
+      ? Math.min(...salesY) - 400
+      : 0;
+  startY = Math.max(0, startY);
   const columns = [[], []];
   for (const item of items) {
     const [x, y] = itemCenter(item);
     if (y < startY) continue;
-    columns[x < 360 ? 0 : 1].push(item);
+    columns[x < columnThreshold ? 0 : 1].push(item);
   }
 
   const products = [];
@@ -928,6 +939,15 @@ function bindEvents() {
   });
   $("#quality-threshold").addEventListener("change", renderLibrary);
   $("#hide-listed").addEventListener("change", renderLibrary);
+  $("#recompute-all").addEventListener("click", async () => {
+    const shops = await getAll("shops");
+    let count = 0;
+    for (const shop of shops) {
+      count += await computeDailyForShop(shop.id);
+    }
+    toast(`重新计算完成，更新 ${count} 个商品`);
+    renderLibrary();
+  });
 
   $("#screenshot-file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];

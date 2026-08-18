@@ -842,12 +842,18 @@ async function findProductByLink(shopId, link) {
   );
 }
 
-function productFromForm(shopId, link, title, dailySales, price, listed, original, note) {
+function productFromForm(shopId, link, salesFirst, salesSecond, intervalDays, price, listed, original, note) {
   const now = new Date().toISOString();
+  const diff = Number(salesSecond) - Number(salesFirst);
+  const days = Number(intervalDays) > 0 ? Number(intervalDays) : 1;
+  const dailySales = Math.round((diff / days) * 100) / 100;
   return {
     shop_id: shopId,
-    title: title || link,
+    title: link,
     product_url: link,
+    sales_t0: Number(salesFirst),
+    sales_t1: Number(salesSecond),
+    interval_days: Number(intervalDays),
     daily_sales: dailySales,
     price_t1: price,
     daily_gmv: price === null ? null : Math.round(dailySales * price * 100) / 100,
@@ -865,13 +871,15 @@ async function saveCompareProduct() {
     return;
   }
   const link = $("#compare-product-link").value.trim();
-  const dailySales = Number($("#compare-daily-sales").value);
+  const salesFirst = Number($("#compare-sales-first").value);
+  const salesSecond = Number($("#compare-sales-second").value);
+  const intervalDays = Number($("#compare-interval").value);
   if (!link) {
     toast("请填写产品链接");
     return;
   }
-  if (Number.isNaN(dailySales)) {
-    toast("请填写日销量");
+  if (Number.isNaN(salesFirst) || Number.isNaN(salesSecond) || Number.isNaN(intervalDays)) {
+    toast("请填写第一次销量、第二次销量和间隔天数");
     return;
   }
   const existing = await findProductByLink(compareShopId, link);
@@ -884,8 +892,9 @@ async function saveCompareProduct() {
   const product = productFromForm(
     compareShopId,
     link,
-    $("#compare-product-title").value.trim(),
-    dailySales,
+    salesFirst,
+    salesSecond,
+    intervalDays,
     price,
     $("#compare-listed").checked,
     $("#compare-original").checked,
@@ -893,8 +902,9 @@ async function saveCompareProduct() {
   );
   await addItem("products", product);
   $("#compare-product-link").value = "";
-  $("#compare-product-title").value = "";
-  $("#compare-daily-sales").value = "";
+  $("#compare-sales-first").value = "";
+  $("#compare-sales-second").value = "";
+  $("#compare-interval").value = "";
   $("#compare-price").value = "";
   $("#compare-listed").checked = false;
   $("#compare-original").checked = false;
@@ -920,9 +930,16 @@ async function addManualProduct() {
     return;
   }
   const link = $("#manual-product-link").value.trim();
-  const dailySales = Number($("#manual-daily-sales").value);
-  if (!link || Number.isNaN(dailySales)) {
-    toast("请填写产品链接和日销量");
+  const salesFirst = Number($("#manual-sales-first").value);
+  const salesSecond = Number($("#manual-sales-second").value);
+  const intervalDays = Number($("#manual-interval").value);
+  if (
+    !link ||
+    Number.isNaN(salesFirst) ||
+    Number.isNaN(salesSecond) ||
+    Number.isNaN(intervalDays)
+  ) {
+    toast("请填写产品链接、两次销量和间隔天数");
     return;
   }
   const existing = await findProductByLink(shopId, link);
@@ -935,8 +952,9 @@ async function addManualProduct() {
   const product = productFromForm(
     shopId,
     link,
-    $("#manual-product-title").value.trim(),
-    dailySales,
+    salesFirst,
+    salesSecond,
+    intervalDays,
     price,
     $("#manual-listed").checked,
     $("#manual-original").checked,
@@ -944,8 +962,9 @@ async function addManualProduct() {
   );
   await addItem("products", product);
   $("#manual-product-link").value = "";
-  $("#manual-product-title").value = "";
-  $("#manual-daily-sales").value = "";
+  $("#manual-sales-first").value = "";
+  $("#manual-sales-second").value = "";
+  $("#manual-interval").value = "";
   $("#manual-price").value = "";
   $("#manual-listed").checked = false;
   $("#manual-original").checked = false;
@@ -991,7 +1010,7 @@ async function renderLibrary() {
           <div class="badge ${product.status === "quality" ? "warn" : ""}">${escapeHtml(statusLabel)}</div>
           <div class="item-title">${escapeHtml(product.title)}</div>
           <div class="item-meta">店铺：${escapeHtml(shop.title || "店铺")} · <a href="${escapeHtml(shop.url || "#")}" target="_blank" rel="noopener">打开店铺</a></div>
-          <div class="item-meta">日均销 ${escapeHtml(product.daily_sales ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 单价 ${escapeHtml(product.price_t1 ?? "-")} · 累计 ${escapeHtml(product.sales_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
+          <div class="item-meta">第一次 ${escapeHtml(product.sales_t0 ?? "-")} · 第二次 ${escapeHtml(product.sales_t1 ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 日均 ${escapeHtml(product.daily_sales ?? "-")} · 单价 ${escapeHtml(product.price_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
           <div class="item-meta">${product.product_url ? `<a href="${escapeHtml(product.product_url)}" target="_blank" rel="noopener">商品链接</a>` : "暂无商品链接"}</div>
           <div class="item-meta">备注：${escapeHtml(product.note || "无")}</div>
           <div class="item-actions">
@@ -1129,7 +1148,7 @@ function exportCsv() {
       ]);
     }
     rows.push([]);
-    rows.push(["产品库更新时间", "店铺", "商品", "日均销量", "间隔天数", "单价", "累计销量", "日GMV", "状态", "是否原创", "备注"]);
+    rows.push(["产品库更新时间", "店铺", "商品", "日均销量", "间隔天数", "第一次销量", "第二次销量", "单价", "日GMV", "状态", "是否原创", "备注"]);
     for (const product of products) {
       const shop = shops.find((s) => s.id === product.shop_id) || {};
       rows.push([
@@ -1138,8 +1157,9 @@ function exportCsv() {
         product.title || "",
         product.daily_sales ?? "",
         product.interval_days || "",
-        product.price_t1 ?? "",
+        product.sales_t0 ?? "",
         product.sales_t1 ?? "",
+        product.price_t1 ?? "",
         product.daily_gmv ?? "",
         product.status || "",
         product.is_original ? "是" : "否",
@@ -1314,20 +1334,33 @@ function bindEvents() {
       getAll("products").then(async (products) => {
         const product = products.find((p) => p.id === productId);
         if (!product) return;
-        const daily = prompt("日销量", product.daily_sales ?? "");
-        if (daily === null) return;
+        const first = prompt("第一次累计销量", product.sales_t0 ?? "");
+        if (first === null) return;
+        const second = prompt("第二次累计销量", product.sales_t1 ?? "");
+        if (second === null) return;
+        const interval = prompt("间隔天数", product.interval_days ?? 1);
+        if (interval === null) return;
         const price = prompt("单价（可留空）", product.price_t1 ?? "");
         if (price === null) return;
         const link = prompt("产品链接", product.product_url || "");
         if (link === null) return;
-        const title = prompt("产品名称（可留空）", product.title || "");
-        if (title === null) return;
-        const dailyNumber = Number(daily);
+        const firstNumber = Number(first);
+        const secondNumber = Number(second);
+        const intervalNumber = Number(interval);
+        if (Number.isNaN(firstNumber) || Number.isNaN(secondNumber) || Number.isNaN(intervalNumber)) {
+          toast("销量和间隔天数格式不正确");
+          return;
+        }
+        const dailyNumber =
+          Math.round(((secondNumber - firstNumber) / Math.max(intervalNumber, 1)) * 100) / 100;
         const priceNumber = price ? Number(price) : null;
+        product.sales_t0 = firstNumber;
+        product.sales_t1 = secondNumber;
+        product.interval_days = intervalNumber;
         product.daily_sales = dailyNumber;
         product.price_t1 = priceNumber;
         product.product_url = link.trim();
-        if (title.trim()) product.title = title.trim();
+        product.title = link.trim();
         product.daily_gmv =
           priceNumber === null ? null : Math.round(dailyNumber * priceNumber * 100) / 100;
         product.updated_at = new Date().toISOString();

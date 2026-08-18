@@ -123,6 +123,14 @@ async function deleteShop(shopId) {
   await deleteItem("shops", shopId);
 }
 
+async function pruneShopSnapshots(shopId) {
+  const snaps = await getShopSnapshots(shopId);
+  const excess = snaps.length - 2;
+  for (const snap of snaps.slice(0, excess)) {
+    await deleteItem("shop_snapshots", snap.id);
+  }
+}
+
 async function clearStore(storeName) {
   const db = await openDB();
   const tx = db.transaction(storeName, "readwrite");
@@ -250,9 +258,40 @@ async function getOcrWorker() {
   return workerPromise;
 }
 
+function prepareImageForOcr(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const maxWidth = 1000;
+      const scale = Math.min(1, maxWidth / img.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          URL.revokeObjectURL(url);
+          if (blob) resolve(blob);
+          else reject(new Error("图片处理失败"));
+        },
+        "image/jpeg",
+        0.85
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片读取失败"));
+    };
+    img.src = url;
+  });
+}
+
 async function recognizeImage(file) {
+  const prepared = await prepareImageForOcr(file);
   const worker = await getOcrWorker();
-  const objectUrl = URL.createObjectURL(file);
+  const objectUrl = URL.createObjectURL(prepared);
   try {
     const { data } = await worker.recognize(objectUrl);
     return { text: data.text || "", items: flattenOcrItems(data) };
@@ -526,16 +565,29 @@ async function uploadScreenshot(shopId, file) {
     else stage = last.stage === "first" ? "recapture" : "first";
   }
 
-  toast("正在识别截图，请稍候");
-  $("#header-status").textContent = "OCR 准备中";
+  toast("正在保存截图");
+  $("#header-status").textContent = "保存中";
   try {
-    const { text, items } = await recognizeImage(file);
     const imageData = await file.arrayBuffer();
-    const lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const parsedProducts = parseProductsFromItems(items);
+    const existingShop = await getShop(shopId);
+    const needShopName =
+      !existingShop ||
+      !existingShop.title ||
+      existingShop.title === "未命名店铺" ||
+      existingShop.title.startsWith("未命名");
+    let lines = [];
+    let items = [];
+    let parsedProducts = [];
+    if (needShopName) {
+      toast("正在识别店铺名，请稍候");
+      const result = await recognizeImage(file);
+      items = result.items;
+      lines = result.text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      parsedProducts = parseProductsFromItems(items);
+    }
     const snap = {
       shop_id: shopId,
       snapshot_at: new Date().toISOString(),
@@ -547,9 +599,10 @@ async function uploadScreenshot(shopId, file) {
       created_at: new Date().toISOString(),
     };
     await addItem("shop_snapshots", snap);
+    await pruneShopSnapshots(shopId);
     const shop = await getShop(shopId);
     if (shop) {
-      if (!shop.title || shop.title === "未命名店铺" || shop.title.startsWith("未命名")) {
+      if (needShopName) {
         const detectedName = extractShopNameFromOcr(items);
         if (detectedName) {
           shop.title = detectedName;
@@ -561,8 +614,7 @@ async function uploadScreenshot(shopId, file) {
       await putItem("shops", shop);
     }
     $("#header-status").textContent = "本地版";
-    const matched = await computeDailyForShop(shopId);
-    toast(`已保存，识别 ${lines.length} 行，匹配 ${matched} 个商品`);
+    toast(needShopName ? "截图已保存，并识别店铺名" : "截图已保存");
     renderAll();
   } catch (error) {
     $("#header-status").textContent = "本地版";
@@ -578,18 +630,14 @@ async function replaceSnapshot(snapshotId, file) {
   }
   toast("正在替换截图，请稍候");
   try {
-    const { text, items } = await recognizeImage(file);
     snap.imageData = await file.arrayBuffer();
     snap.imageMime = file.type || "image/*";
-    snap.ocr_lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    snap.parsedProducts = parseProductsFromItems(items);
+    snap.ocr_lines = [];
+    snap.parsedProducts = [];
     snap.snapshot_at = new Date().toISOString();
     await putItem("shop_snapshots", snap);
-    const matched = await computeDailyForShop(snap.shop_id);
-    toast(`截图已替换，匹配 ${matched} 个商品`);
+    await pruneShopSnapshots(snap.shop_id);
+    toast("截图已替换");
     renderAll();
   } catch (error) {
     toast(`替换失败：${error.message}`);
@@ -719,19 +767,205 @@ async function renderRecords() {
             <div class="item-title">${escapeHtml(shop.title || "未命名店铺")}</div>
             <div class="item-meta">${escapeHtml(shop.url)} · ${items.length} 条记录</div>
           </summary>
+          <div class="item-actions">
+            <button data-compare-shop="${shop.id}">对比最近两张</button>
+          </div>
           ${items.map((snap) => snapshotCard(snap, shop)).join("")}
         </details>`;
     })
     .join("");
 }
 
+let compareShopId = null;
+
+function snapshotImageUrl(snap) {
+  if (snap.imageData) {
+    return URL.createObjectURL(new Blob([snap.imageData], { type: snap.imageMime || "image/*" }));
+  }
+  if (snap.imageBlob) {
+    return URL.createObjectURL(snap.imageBlob);
+  }
+  return "";
+}
+
+async function openCompare(shopId) {
+  const snaps = await getShopSnapshots(shopId);
+  if (snaps.length < 2) {
+    toast("这家店还需要两张截图才能对比");
+    return;
+  }
+  const shop = await getShop(shopId);
+  compareShopId = shopId;
+  $("#compare-title").textContent = `${shop?.title || "店铺"} · 最近两张`;
+  const lastTwo = snaps.slice(-2);
+  $("#compare-images").innerHTML = lastTwo
+    .map(
+      (snap, index) => `
+        <div class="compare-item">
+          <div class="badge">${index === 0 ? "较早截图" : "最新截图"}</div>
+          <img src="${snapshotImageUrl(snap)}" alt="店铺截图对比">
+        </div>`
+    )
+    .join("");
+  $("#compare-product-panel").style.display = "none";
+  $("#compare-overlay").style.display = "flex";
+  $("#compare-scroll").scrollTop = 0;
+}
+
+function closeCompare() {
+  $("#compare-overlay").style.display = "none";
+  compareShopId = null;
+}
+
+function showComparePanel() {
+  $("#compare-product-panel").style.display = "block";
+}
+
+function hideComparePanel() {
+  $("#compare-product-panel").style.display = "none";
+}
+
+async function findProductByLink(shopId, link) {
+  const products = await getAll("products");
+  const normalize = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  const target = normalize(link);
+  return (
+    products.find(
+      (product) =>
+        product.shop_id === shopId && normalize(product.product_url) === target
+    ) || null
+  );
+}
+
+function productFromForm(shopId, link, title, dailySales, price, listed, original, note) {
+  const now = new Date().toISOString();
+  return {
+    shop_id: shopId,
+    title: title || link,
+    product_url: link,
+    daily_sales: dailySales,
+    price_t1: price,
+    daily_gmv: price === null ? null : Math.round(dailySales * price * 100) / 100,
+    status: listed ? "listed" : original ? "original" : "candidate",
+    is_original: original,
+    note,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+async function saveCompareProduct() {
+  if (!compareShopId) {
+    toast("请先选择店铺");
+    return;
+  }
+  const link = $("#compare-product-link").value.trim();
+  const dailySales = Number($("#compare-daily-sales").value);
+  if (!link) {
+    toast("请填写产品链接");
+    return;
+  }
+  if (Number.isNaN(dailySales)) {
+    toast("请填写日销量");
+    return;
+  }
+  const existing = await findProductByLink(compareShopId, link);
+  if (existing) {
+    toast("该产品已录入，无需重复录入");
+    return;
+  }
+  const priceValue = $("#compare-price").value.trim();
+  const price = priceValue ? Number(priceValue) : null;
+  const product = productFromForm(
+    compareShopId,
+    link,
+    $("#compare-product-title").value.trim(),
+    dailySales,
+    price,
+    $("#compare-listed").checked,
+    $("#compare-original").checked,
+    $("#compare-note").value.trim()
+  );
+  await addItem("products", product);
+  $("#compare-product-link").value = "";
+  $("#compare-product-title").value = "";
+  $("#compare-daily-sales").value = "";
+  $("#compare-price").value = "";
+  $("#compare-listed").checked = false;
+  $("#compare-original").checked = false;
+  $("#compare-note").value = "";
+  hideComparePanel();
+  toast("产品已保存，对比页位置不变");
+  renderLibrary();
+}
+
+async function renderManualShopSelect(selectedId) {
+  const shops = (await getAll("shops")).filter((shop) => shop.status !== "excluded");
+  const select = $("#manual-shop-select");
+  select.innerHTML = shops
+    .map((shop) => `<option value="${shop.id}">${escapeHtml(shop.title || shop.url)}</option>`)
+    .join("");
+  if (selectedId) select.value = selectedId;
+}
+
+async function addManualProduct() {
+  const shopId = Number($("#manual-shop-select").value);
+  if (!shopId) {
+    toast("请先选择店铺");
+    return;
+  }
+  const link = $("#manual-product-link").value.trim();
+  const dailySales = Number($("#manual-daily-sales").value);
+  if (!link || Number.isNaN(dailySales)) {
+    toast("请填写产品链接和日销量");
+    return;
+  }
+  const existing = await findProductByLink(shopId, link);
+  if (existing) {
+    toast("该产品已录入，无需重复录入");
+    return;
+  }
+  const priceValue = $("#manual-price").value.trim();
+  const price = priceValue ? Number(priceValue) : null;
+  const product = productFromForm(
+    shopId,
+    link,
+    $("#manual-product-title").value.trim(),
+    dailySales,
+    price,
+    $("#manual-listed").checked,
+    $("#manual-original").checked,
+    $("#manual-note").value.trim()
+  );
+  await addItem("products", product);
+  $("#manual-product-link").value = "";
+  $("#manual-product-title").value = "";
+  $("#manual-daily-sales").value = "";
+  $("#manual-price").value = "";
+  $("#manual-listed").checked = false;
+  $("#manual-original").checked = false;
+  $("#manual-note").value = "";
+  toast("产品已添加");
+  renderLibrary();
+}
+
 async function renderLibrary() {
   const products = await getAll("products");
   const shops = await getAll("shops");
   const hideListed = $("#hide-listed").checked;
-  const visible = products.filter(
-    (product) => !hideListed || product.status !== "listed"
-  );
+  const showRemoved = $("#show-removed").checked;
+  const visible = products.filter((product) => {
+    if (product.is_original || product.status === "original" || product.status === "discarded") {
+      return showRemoved;
+    }
+    if (hideListed && product.status === "listed") return false;
+    return true;
+  });
   visible.sort((a, b) => {
     if (a.status === "listed" && b.status !== "listed") return 1;
     if (b.status === "listed" && a.status !== "listed") return -1;
@@ -749,19 +983,24 @@ async function renderLibrary() {
         candidate: "待观察",
         quality: "优质",
         listed: "已上架",
+        original: "原创",
         discarded: "已删除",
       }[product.status] || product.status;
       return `
         <div class="item">
           <div class="badge ${product.status === "quality" ? "warn" : ""}">${escapeHtml(statusLabel)}</div>
           <div class="item-title">${escapeHtml(product.title)}</div>
-          <div class="item-meta">${escapeHtml(shop.title || "店铺")}</div>
+          <div class="item-meta">店铺：${escapeHtml(shop.title || "店铺")} · <a href="${escapeHtml(shop.url || "#")}" target="_blank" rel="noopener">打开店铺</a></div>
           <div class="item-meta">日均销 ${escapeHtml(product.daily_sales ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 单价 ${escapeHtml(product.price_t1 ?? "-")} · 累计 ${escapeHtml(product.sales_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
           <div class="item-meta">${product.product_url ? `<a href="${escapeHtml(product.product_url)}" target="_blank" rel="noopener">商品链接</a>` : "暂无商品链接"}</div>
           <div class="item-meta">备注：${escapeHtml(product.note || "无")}</div>
           <div class="item-actions">
             <button data-list-product="${product.id}">标记已上架</button>
+            ${product.is_original || product.status === "original" || product.status === "discarded"
+              ? `<button class="ghost" data-restore-product="${product.id}">恢复</button>`
+              : ""}
             <button class="ghost" data-product-url="${product.id}">填写商品链接</button>
+            <button class="ghost" data-edit-product="${product.id}">编辑</button>
             <button class="ghost" data-note-product="${product.id}">备注</button>
             <button class="danger" data-delete-product="${product.id}">删除</button>
           </div>
@@ -771,7 +1010,13 @@ async function renderLibrary() {
 }
 
 async function renderAll() {
-  await Promise.all([renderTasks(), renderShops(), renderRecords(), renderLibrary()]);
+  await Promise.all([
+    renderTasks(),
+    renderShops(),
+    renderRecords(),
+    renderLibrary(),
+    renderManualShopSelect(),
+  ]);
 }
 
 async function showLastRecognition(shopId) {
@@ -884,7 +1129,7 @@ function exportCsv() {
       ]);
     }
     rows.push([]);
-    rows.push(["产品库更新时间", "店铺", "商品", "日均销量", "间隔天数", "单价", "累计销量", "日GMV", "状态", "备注"]);
+    rows.push(["产品库更新时间", "店铺", "商品", "日均销量", "间隔天数", "单价", "累计销量", "日GMV", "状态", "是否原创", "备注"]);
     for (const product of products) {
       const shop = shops.find((s) => s.id === product.shop_id) || {};
       rows.push([
@@ -897,6 +1142,7 @@ function exportCsv() {
         product.sales_t1 ?? "",
         product.daily_gmv ?? "",
         product.status || "",
+        product.is_original ? "是" : "否",
         product.note || "",
       ]);
     }
@@ -958,6 +1204,16 @@ function bindEvents() {
   });
   $("#quality-threshold").addEventListener("change", renderLibrary);
   $("#hide-listed").addEventListener("change", renderLibrary);
+  $("#show-removed").addEventListener("change", renderLibrary);
+  $("#manual-add-product").addEventListener("click", () => {
+    addManualProduct().catch((error) => toast(`添加失败：${error.message}`));
+  });
+  $("#compare-close").addEventListener("click", closeCompare);
+  $("#compare-add-product").addEventListener("click", showComparePanel);
+  $("#compare-cancel-product").addEventListener("click", hideComparePanel);
+  $("#compare-save-product").addEventListener("click", () => {
+    saveCompareProduct().catch((error) => toast(`保存失败：${error.message}`));
+  });
   $("#recompute-all").addEventListener("click", async () => {
     const shops = await getAll("shops");
     let reprocessed = 0;
@@ -965,7 +1221,10 @@ function bindEvents() {
     for (const shop of shops) {
       const snaps = await getShopSnapshots(shop.id);
       for (const snap of snaps) {
-        if (await reprocessSnapshot(snap)) reprocessed += 1;
+        if (await reprocessSnapshot(snap)) {
+          reprocessed += 1;
+          toast(`正在补算旧截图 ${reprocessed} 张...`);
+        }
       }
       count += await computeDailyForShop(shop.id);
     }
@@ -1015,6 +1274,12 @@ function bindEvents() {
       return;
     }
 
+    const compareBtn = event.target.closest("[data-compare-shop]");
+    if (compareBtn) {
+      openCompare(Number(compareBtn.dataset.compareShop));
+      return;
+    }
+
     const listProductBtn = event.target.closest("[data-list-product]");
     if (listProductBtn) {
       const productId = Number(listProductBtn.dataset.listProduct);
@@ -1037,6 +1302,50 @@ function bindEvents() {
         const url = prompt("粘贴商品链接", product.product_url || "");
         if (url === null) return;
         product.product_url = url.trim();
+        product.updated_at = new Date().toISOString();
+        putItem("products", product).then(renderLibrary);
+      });
+      return;
+    }
+
+    const editProductBtn = event.target.closest("[data-edit-product]");
+    if (editProductBtn) {
+      const productId = Number(editProductBtn.dataset.editProduct);
+      getAll("products").then(async (products) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product) return;
+        const daily = prompt("日销量", product.daily_sales ?? "");
+        if (daily === null) return;
+        const price = prompt("单价（可留空）", product.price_t1 ?? "");
+        if (price === null) return;
+        const link = prompt("产品链接", product.product_url || "");
+        if (link === null) return;
+        const title = prompt("产品名称（可留空）", product.title || "");
+        if (title === null) return;
+        const dailyNumber = Number(daily);
+        const priceNumber = price ? Number(price) : null;
+        product.daily_sales = dailyNumber;
+        product.price_t1 = priceNumber;
+        product.product_url = link.trim();
+        if (title.trim()) product.title = title.trim();
+        product.daily_gmv =
+          priceNumber === null ? null : Math.round(dailyNumber * priceNumber * 100) / 100;
+        product.updated_at = new Date().toISOString();
+        await putItem("products", product);
+        toast("产品已更新");
+        renderLibrary();
+      });
+      return;
+    }
+
+    const restoreProductBtn = event.target.closest("[data-restore-product]");
+    if (restoreProductBtn) {
+      const productId = Number(restoreProductBtn.dataset.restoreProduct);
+      getAll("products").then((products) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product) return;
+        product.status = "candidate";
+        product.is_original = false;
         product.updated_at = new Date().toISOString();
         putItem("products", product).then(renderLibrary);
       });

@@ -5,6 +5,7 @@ const DB_NAME = "xhs-selection-pwa";
 const DB_VERSION = 1;
 let dbPromise = null;
 let workerPromise = null;
+let shopTab = "candidate";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -215,22 +216,40 @@ async function addShop() {
   renderAll();
 }
 
+function shopCompareStatus(shop, snaps) {
+  const ordered = [...snaps].sort(
+    (a, b) => Date.parse(a.snapshot_at) - Date.parse(b.snapshot_at)
+  );
+  const latest = ordered[ordered.length - 1] || null;
+  const needsCompare =
+    ordered.length >= 2 &&
+    (!shop.last_compared_at ||
+      (latest && Date.parse(shop.last_compared_at) < Date.parse(latest.snapshot_at)));
+  return { needsCompare, latest };
+}
+
 async function selectTasks() {
   const shops = (await getAll("shops")).filter((shop) => shop.status !== "excluded");
   const now = Date.now();
   const recapture = [];
   const firsts = [];
+  const compares = [];
 
   for (const shop of shops) {
-    const last = await getLatestSnapshot(shop.id);
+    const snaps = await getShopSnapshots(shop.id);
+    const last = snaps[snaps.length - 1] || null;
     if (!last) {
       firsts.push({ shop, reason: "新店，尚未截图" });
     } else if (last.stage === "first") {
       if (now - Date.parse(last.snapshot_at) >= 20 * 60 * 60 * 1000) {
-        recapture.push({ shop, reason: "24小时回读" });
+        recapture.push({ shop, reason: "24小时回读", task_type: "recapture" });
       }
     } else if (now - Date.parse(last.snapshot_at) >= 3 * 24 * 60 * 60 * 1000) {
-      firsts.push({ shop, reason: "轮换复看" });
+      firsts.push({ shop, reason: "轮换复看", task_type: "first" });
+    }
+    const compareStatus = shopCompareStatus(shop, snaps);
+    if (compareStatus.needsCompare) {
+      compares.push({ shop, reason: "待对比", task_type: "compare" });
     }
   }
 
@@ -239,7 +258,7 @@ async function selectTasks() {
   );
   firsts.sort((a, b) => (a.shop.seen_count || 0) - (b.shop.seen_count || 0));
 
-  return [...recapture.slice(0, 10), ...firsts.slice(0, 10)];
+  return [...compares.slice(0, 10), ...recapture.slice(0, 10), ...firsts.slice(0, 10)].slice(0, 20);
 }
 
 async function getOcrWorker() {
@@ -658,11 +677,10 @@ function shopCard(shop) {
       <div class="item-actions">
         <a href="${escapeHtml(shop.url)}" target="_blank" rel="noopener">打开店铺</a>
         <button data-upload-shop="${shop.id}">上传截图</button>
-        <button class="ghost" data-view-shop="${shop.id}">查看识别</button>
         <button class="ghost" data-note-shop="${shop.id}">备注/分类</button>
-        ${shop.status === "excluded"
+        ${shop.is_original || shop.status === "original"
           ? `<button class="ghost" data-restore-shop="${shop.id}">恢复</button>`
-          : `<button class="danger" data-exclude-shop="${shop.id}">排除</button>`}
+          : `<button class="danger" data-original-shop="${shop.id}">原创</button>`}
         <button class="danger" data-delete-shop="${shop.id}">删除店铺</button>
       </div>
     </div>`;
@@ -683,7 +701,7 @@ function taskCard(task) {
       <div class="item-actions">
         <a href="${escapeHtml(shop.url)}" target="_blank" rel="noopener">打开店铺</a>
         <button data-upload-shop="${shop.id}">上传截图</button>
-        <button class="ghost" data-view-shop="${shop.id}">查看识别</button>
+        ${task.task_type === "compare" ? `<button data-compare-shop="${shop.id}">对比截图</button>` : ""}
       </div>
     </div>`;
 }
@@ -723,8 +741,30 @@ async function renderTasks() {
   list.innerHTML = tasks.map(taskCard).join("");
 }
 
+function updateShopTabs() {
+  $("#shop-tab-candidate")?.classList.toggle("active", shopTab === "candidate");
+  $("#shop-tab-original")?.classList.toggle("active", shopTab === "original");
+}
+
 async function renderShops() {
-  const shops = (await getAll("shops")).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  updateShopTabs();
+  let shops = await getAll("shops");
+  if (shopTab === "candidate") {
+    shops = shops.filter((shop) => !shop.is_original && shop.status !== "original" && shop.status !== "excluded");
+    $("#shop-pool-title").textContent = "候选店铺";
+  } else {
+    shops = shops.filter((shop) => shop.is_original || shop.status === "original");
+    $("#shop-pool-title").textContent = "原创店铺";
+  }
+  const search = $("#shop-search").value.trim().toLowerCase();
+  if (search) {
+    shops = shops.filter(
+      (shop) =>
+        (shop.title || "").toLowerCase().includes(search) ||
+        (shop.url || "").toLowerCase().includes(search)
+    );
+  }
+  shops.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   $("#stat-shops").textContent = shops.length;
   const list = $("#shop-list");
   if (!shops.length) {
@@ -745,13 +785,21 @@ async function renderRecords() {
     return;
   }
   const shops = await getAll("shops");
+  const search = $("#record-search").value.trim().toLowerCase();
+  const visibleShops = search
+    ? shops.filter(
+        (shop) =>
+          (shop.title || "").toLowerCase().includes(search) ||
+          (shop.url || "").toLowerCase().includes(search)
+      )
+    : shops;
   const byShop = new Map();
   for (const snap of snaps) {
     if (!byShop.has(snap.shop_id)) byShop.set(snap.shop_id, []);
     byShop.get(snap.shop_id).push(snap);
   }
   const shopsWithRecords = [...byShop.keys()]
-    .map((shopId) => shops.find((shop) => shop.id === shopId))
+    .map((shopId) => visibleShops.find((shop) => shop.id === shopId))
     .filter(Boolean)
     .sort((a, b) => {
       const aLatest = byShop.get(a.id)[0].snapshot_at;
@@ -761,11 +809,12 @@ async function renderRecords() {
   list.innerHTML = shopsWithRecords
     .map((shop) => {
       const items = byShop.get(shop.id);
+      const compareStatus = shopCompareStatus(shop, items);
       return `
         <details class="item shop-record">
           <summary>
             <div class="item-title">${escapeHtml(shop.title || "未命名店铺")}</div>
-            <div class="item-meta">${escapeHtml(shop.url)} · ${items.length} 条记录</div>
+            <div class="item-meta">${escapeHtml(shop.url)} · ${items.length} 条记录 · <span class="badge ${compareStatus.needsCompare ? "warn" : ""}">${compareStatus.needsCompare ? "待对比" : "已对比"}</span></div>
           </summary>
           <div class="item-actions">
             <button data-compare-shop="${shop.id}">对比最近两张</button>
@@ -842,11 +891,12 @@ async function findProductByLink(shopId, link) {
   );
 }
 
-function productFromForm(shopId, link, salesFirst, salesSecond, intervalDays, price, listed, original, note) {
+function productFromForm(shopId, link, salesFirst, salesSecond, intervalDays, price, listed, category, note) {
   const now = new Date().toISOString();
   const diff = Number(salesSecond) - Number(salesFirst);
   const days = Number(intervalDays) > 0 ? Number(intervalDays) : 1;
   const dailySales = Math.round((diff / days) * 100) / 100;
+  const isOriginal = category === "原创";
   return {
     shop_id: shopId,
     title: link,
@@ -857,8 +907,9 @@ function productFromForm(shopId, link, salesFirst, salesSecond, intervalDays, pr
     daily_sales: dailySales,
     price_t1: price,
     daily_gmv: price === null ? null : Math.round(dailySales * price * 100) / 100,
-    status: listed ? "listed" : original ? "original" : "candidate",
-    is_original: original,
+    status: listed ? "listed" : isOriginal ? "original" : "candidate",
+    category,
+    is_original: isOriginal,
     note,
     created_at: now,
     updated_at: now,
@@ -897,7 +948,7 @@ async function saveCompareProduct() {
     intervalDays,
     price,
     $("#compare-listed").checked,
-    $("#compare-original").checked,
+    $("#compare-category").value,
     $("#compare-note").value.trim()
   );
   await addItem("products", product);
@@ -907,7 +958,7 @@ async function saveCompareProduct() {
   $("#compare-interval").value = "";
   $("#compare-price").value = "";
   $("#compare-listed").checked = false;
-  $("#compare-original").checked = false;
+  $("#compare-category").value = "整理";
   $("#compare-note").value = "";
   hideComparePanel();
   toast("产品已保存，对比页位置不变");
@@ -976,13 +1027,18 @@ async function addManualProduct() {
 async function renderLibrary() {
   const products = await getAll("products");
   const shops = await getAll("shops");
-  const hideListed = $("#hide-listed").checked;
-  const showRemoved = $("#show-removed").checked;
+  const filter = $("#library-filter").value;
+  const minDaily = Number($("#daily-sales-filter").value || 0);
+  const shopQuery = $("#shop-filter").value.trim().toLowerCase();
   const visible = products.filter((product) => {
-    if (product.is_original || product.status === "original" || product.status === "discarded") {
-      return showRemoved;
+    const shop = shops.find((s) => s.id === product.shop_id) || {};
+    if (shopQuery && !(shop.title || "").toLowerCase().includes(shopQuery)) return false;
+    if ((product.daily_sales ?? 0) < minDaily) return false;
+    if (filter === "pending") {
+      return !product.is_original && product.status !== "original" && product.status !== "listed" && product.status !== "discarded";
     }
-    if (hideListed && product.status === "listed") return false;
+    if (filter === "listed") return product.status === "listed";
+    if (filter === "original") return product.is_original || product.status === "original" || product.status === "discarded";
     return true;
   });
   visible.sort((a, b) => {
@@ -1010,8 +1066,8 @@ async function renderLibrary() {
           <div class="badge ${product.status === "quality" ? "warn" : ""}">${escapeHtml(statusLabel)}</div>
           <div class="item-title">${escapeHtml(product.title)}</div>
           <div class="item-meta">店铺：${escapeHtml(shop.title || "店铺")} · <a href="${escapeHtml(shop.url || "#")}" target="_blank" rel="noopener">打开店铺</a></div>
-          <div class="item-meta">第一次 ${escapeHtml(product.sales_t0 ?? "-")} · 第二次 ${escapeHtml(product.sales_t1 ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 日均 ${escapeHtml(product.daily_sales ?? "-")} · 单价 ${escapeHtml(product.price_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
-          <div class="item-meta">${product.product_url ? `<a href="${escapeHtml(product.product_url)}" target="_blank" rel="noopener">商品链接</a>` : "暂无商品链接"}</div>
+          <div class="item-meta">类别：${escapeHtml(product.category || "整理")} · 第一次 ${escapeHtml(product.sales_t0 ?? "-")} · 第二次 ${escapeHtml(product.sales_t1 ?? "-")} · 间隔 ${escapeHtml(product.interval_days || 1)} 天 · 日均 ${escapeHtml(product.daily_sales ?? "-")} · 单价 ${escapeHtml(product.price_t1 ?? "-")} · GMV ${escapeHtml(product.daily_gmv ?? "-")}</div>
+          <div class="item-meta">${product.product_url ? `<button class="ghost" data-open-product="${product.id}">打开商品链接</button>` : "暂无商品链接"}</div>
           <div class="item-meta">备注：${escapeHtml(product.note || "无")}</div>
           <div class="item-actions">
             <button data-list-product="${product.id}">标记已上架</button>
@@ -1034,7 +1090,6 @@ async function renderAll() {
     renderShops(),
     renderRecords(),
     renderLibrary(),
-    renderManualShopSelect(),
   ]);
 }
 
@@ -1222,36 +1277,37 @@ function bindEvents() {
     }
     event.target.value = "";
   });
-  $("#quality-threshold").addEventListener("change", renderLibrary);
-  $("#hide-listed").addEventListener("change", renderLibrary);
-  $("#show-removed").addEventListener("change", renderLibrary);
-  $("#manual-add-product").addEventListener("click", () => {
-    addManualProduct().catch((error) => toast(`添加失败：${error.message}`));
+  $("#library-filter").addEventListener("change", renderLibrary);
+  $("#daily-sales-filter").addEventListener("input", renderLibrary);
+  $("#shop-filter").addEventListener("input", renderLibrary);
+  $("#shop-search").addEventListener("input", renderShops);
+  $("#shop-tab-candidate").addEventListener("click", () => {
+    shopTab = "candidate";
+    updateShopTabs();
+    renderShops();
   });
+  $("#shop-tab-original").addEventListener("click", () => {
+    shopTab = "original";
+    updateShopTabs();
+    renderShops();
+  });
+  $("#record-search").addEventListener("input", renderRecords);
   $("#compare-close").addEventListener("click", closeCompare);
+  $("#compare-done").addEventListener("click", async () => {
+    if (!compareShopId) return;
+    const shop = await getShop(compareShopId);
+    if (!shop) return;
+    shop.last_compared_at = new Date().toISOString();
+    await putItem("shops", shop);
+    toast("已标记对比完成");
+    closeCompare();
+    renderAll();
+  });
   $("#compare-add-product").addEventListener("click", showComparePanel);
   $("#compare-cancel-product").addEventListener("click", hideComparePanel);
   $("#compare-save-product").addEventListener("click", () => {
     saveCompareProduct().catch((error) => toast(`保存失败：${error.message}`));
   });
-  $("#recompute-all").addEventListener("click", async () => {
-    const shops = await getAll("shops");
-    let reprocessed = 0;
-    let count = 0;
-    for (const shop of shops) {
-      const snaps = await getShopSnapshots(shop.id);
-      for (const snap of snaps) {
-        if (await reprocessSnapshot(snap)) {
-          reprocessed += 1;
-          toast(`正在补算旧截图 ${reprocessed} 张...`);
-        }
-      }
-      count += await computeDailyForShop(shop.id);
-    }
-    toast(`重新识别 ${reprocessed} 张截图，更新 ${count} 个商品`);
-    renderLibrary();
-  });
-
   $("#screenshot-file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];
     const shopId = event.target.dataset.shopId;
@@ -1328,6 +1384,20 @@ function bindEvents() {
       return;
     }
 
+    const openProductBtn = event.target.closest("[data-open-product]");
+    if (openProductBtn) {
+      const productId = Number(openProductBtn.dataset.openProduct);
+      getAll("products").then((products) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product || !product.product_url) {
+          toast("该产品没有商品链接");
+          return;
+        }
+        window.open(product.product_url, "_blank");
+      });
+      return;
+    }
+
     const editProductBtn = event.target.closest("[data-edit-product]");
     if (editProductBtn) {
       const productId = Number(editProductBtn.dataset.editProduct);
@@ -1344,6 +1414,15 @@ function bindEvents() {
         if (price === null) return;
         const link = prompt("产品链接", product.product_url || "");
         if (link === null) return;
+        const statusChoice = prompt("状态：未上架/已上架", product.status === "listed" ? "已上架" : "未上架");
+        if (statusChoice === null) return;
+        const categoryChoice = prompt(
+          "类别：整理/原创",
+          product.category || (product.is_original ? "原创" : "整理")
+        );
+        if (categoryChoice === null) return;
+        const note = prompt("备注（可留空）", product.note || "");
+        if (note === null) return;
         const firstNumber = Number(first);
         const secondNumber = Number(second);
         const intervalNumber = Number(interval);
@@ -1361,6 +1440,15 @@ function bindEvents() {
         product.price_t1 = priceNumber;
         product.product_url = link.trim();
         product.title = link.trim();
+        product.status =
+          statusChoice === "已上架"
+            ? "listed"
+            : categoryChoice === "原创"
+              ? "original"
+              : "candidate";
+        product.is_original = categoryChoice === "原创";
+        product.category = categoryChoice === "原创" ? "原创" : "整理";
+        product.note = note;
         product.daily_gmv =
           priceNumber === null ? null : Math.round(dailyNumber * priceNumber * 100) / 100;
         product.updated_at = new Date().toISOString();
@@ -1437,6 +1525,7 @@ function bindEvents() {
       getShop(shopId).then((shop) => {
         if (!shop) return;
         shop.status = "candidate";
+        shop.is_original = false;
         shop.updated_at = new Date().toISOString();
         putItem("shops", shop).then(renderAll);
       });
@@ -1450,13 +1539,14 @@ function bindEvents() {
       return;
     }
 
-    const excludeBtn = event.target.closest("[data-exclude-shop]");
-    if (excludeBtn) {
-      if (!confirm("确认排除这家店铺吗？")) return;
-      const shopId = Number(excludeBtn.dataset.excludeShop);
+    const originalBtn = event.target.closest("[data-original-shop]");
+    if (originalBtn) {
+      if (!confirm("确认标记为原创店铺吗？标记后会转入原创店铺库。")) return;
+      const shopId = Number(originalBtn.dataset.originalShop);
       getShop(shopId).then((shop) => {
         if (!shop) return;
-        shop.status = "excluded";
+        shop.status = "original";
+        shop.is_original = true;
         shop.updated_at = new Date().toISOString();
         putItem("shops", shop).then(renderAll);
       });

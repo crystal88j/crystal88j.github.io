@@ -61,8 +61,15 @@
         <p id="shop-message" class="message"></p>
       </div>
       <div class="card">
+        <input id="shop-search" placeholder="搜索店铺名称">
+        <div class="item-actions">
+          <button id="shop-tab-candidate" class="ghost">候选店铺</button>
+          <button id="shop-tab-original" class="ghost">原创店铺</button>
+        </div>
+      </div>
+      <div class="card">
         <div class="section-head">
-          <h2>店铺池</h2>
+          <h2 id="shop-pool-title">店铺池</h2>
           <button class="ghost" id="refresh-shops">刷新</button>
         </div>
         <div id="shop-list" class="list"></div>
@@ -74,6 +81,7 @@
         <h2>截图与识别记录</h2>
         <button class="ghost" id="refresh-records">刷新</button>
       </div>
+      <input id="record-search" placeholder="搜索店铺名称">
       <div id="record-list" class="list"></div>
     </section>
 
@@ -101,38 +109,17 @@
     <section id="library" class="page">
       <div class="card">
         <h2>产品排行 / 产品库</h2>
-        <p>按日销量自动排序，卖得好的排前面；已上架默认隐藏。</p>
-        <label>自动入库日销阈值
-          <input id="quality-threshold" type="number" min="1" value="5">
+        <p>按日销量排序，可筛选待上架、已上架、原创。</p>
+        <label>产品类别
+          <select id="library-filter">
+            <option value="pending">待上架</option>
+            <option value="listed">已上架</option>
+            <option value="original">原创/已删除</option>
+            <option value="all">全部</option>
+          </select>
         </label>
-        <label class="switch-line">
-          <input id="hide-listed" type="checkbox" checked>
-          隐藏已上架
-        </label>
-        <label class="switch-line">
-          <input id="show-removed" type="checkbox">
-          显示原创/已删除
-        </label>
-        <button id="recompute-all" class="ghost">补算旧截图日销量</button>
-      </div>
-      <div class="card">
-        <h2>手动添加产品</h2>
-        <select id="manual-shop-select"></select>
-        <input id="manual-product-link" placeholder="产品链接">
-        <input id="manual-sales-first" type="number" placeholder="第一次累计销量">
-        <input id="manual-sales-second" type="number" placeholder="第二次累计销量">
-        <input id="manual-interval" type="number" placeholder="间隔天数">
-        <input id="manual-price" type="number" placeholder="单价，可选">
-        <label class="switch-line">
-          <input id="manual-listed" type="checkbox">
-          已上架
-        </label>
-        <label class="switch-line">
-          <input id="manual-original" type="checkbox">
-          是原创
-        </label>
-        <textarea id="manual-note" rows="2" placeholder="备注，可选"></textarea>
-        <button id="manual-add-product">添加产品</button>
+        <label>日销 >= <input id="daily-sales-filter" type="number" min="0" value="0"></label>
+        <input id="shop-filter" placeholder="按店铺名称过滤">
       </div>
       <div id="library-list" class="list"></div>
     </section>
@@ -142,6 +129,7 @@
     <div class="compare-topbar">
       <button id="compare-close">返回</button>
       <span id="compare-title">对比截图</span>
+      <button id="compare-done" class="ghost">标记已对比</button>
     </div>
     <div id="compare-scroll" class="compare-scroll">
       <div id="compare-images" class="compare-images"></div>
@@ -160,9 +148,11 @@
         <input id="compare-listed" type="checkbox">
         已上架
       </label>
-      <label class="switch-line">
-        <input id="compare-original" type="checkbox">
-        是原创
+      <label>产品类别
+        <select id="compare-category">
+          <option value="整理">整理</option>
+          <option value="原创">原创</option>
+        </select>
       </label>
       <textarea id="compare-note" rows="2" placeholder="备注，可选"></textarea>
       <div class="item-actions">
@@ -177,8 +167,8 @@
     <button data-page="tasks">任务</button>
     <button data-page="shops">店铺</button>
     <button data-page="records">记录</button>
-    <button data-page="report">报表</button>
     <button data-page="library">产品库</button>
+    <button data-page="report">报表</button>
   </nav>
 
   <input id="screenshot-file" type="file" accept="image/*" style="display:none">

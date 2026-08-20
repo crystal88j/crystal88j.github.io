@@ -82,6 +82,12 @@
         <button class="ghost" id="refresh-records">刷新</button>
       </div>
       <input id="record-search" placeholder="搜索店铺名称">
+      <select id="record-filter">
+        <option value="all">全部状态</option>
+        <option value="compare">待对比</option>
+        <option value="pending">待完善</option>
+        <option value="done">已对比</option>
+      </select>
       <div id="record-list" class="list"></div>
     </section>
 
@@ -114,6 +120,7 @@
           <select id="library-filter">
             <option value="pending">待上架</option>
             <option value="listed">已上架</option>
+            <option value="must">必上</option>
             <option value="original">原创/已删除</option>
             <option value="all">全部</option>
           </select>
@@ -148,6 +155,10 @@
         <input id="compare-listed" type="checkbox">
         已上架
       </label>
+      <label class="switch-line">
+        <input id="compare-must-list" type="checkbox">
+        必上
+      </label>
       <label>产品类别
         <select id="compare-category">
           <option value="整理">整理</option>
@@ -158,6 +169,39 @@
       <div class="item-actions">
         <button id="compare-save-product">保存</button>
         <button id="compare-cancel-product" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="edit-product-overlay" class="compare-overlay" style="display:none">
+    <div class="compare-topbar">
+      <button id="edit-product-cancel">返回</button>
+      <span id="edit-product-title">编辑产品</span>
+    </div>
+    <div class="edit-panel">
+      <input id="edit-product-link" placeholder="产品链接">
+      <input id="edit-sales-first" type="number" placeholder="第一次累计销量">
+      <input id="edit-sales-second" type="number" placeholder="第二次累计销量">
+      <input id="edit-interval" type="number" placeholder="间隔天数">
+      <input id="edit-price" type="number" placeholder="单价，可选">
+      <label class="switch-line">
+        <input id="edit-listed" type="checkbox">
+        已上架
+      </label>
+      <label class="switch-line">
+        <input id="edit-must-list" type="checkbox">
+        必上
+      </label>
+      <label>产品类别
+        <select id="edit-category">
+          <option value="整理">整理</option>
+          <option value="原创">原创</option>
+        </select>
+      </label>
+      <textarea id="edit-note" rows="2" placeholder="备注，可选"></textarea>
+      <div class="item-actions">
+        <button id="edit-product-save">保存</button>
+        <button id="edit-product-cancel-bottom" class="ghost">取消</button>
       </div>
     </div>
   </div>

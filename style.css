@@ -359,6 +359,14 @@ textarea {
   padding: 14px;
 }
 
+.edit-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  background: #fff;
+  color: var(--text);
+}
+
 a {
   color: var(--accent);
   text-decoration: none;
